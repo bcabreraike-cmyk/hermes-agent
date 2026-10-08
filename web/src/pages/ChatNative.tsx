@@ -21,7 +21,6 @@ interface NativeMessage {
 
 function toNativeMessages(messages: SessionMessage[]): NativeMessage[] {
   return messages.map((m, i) => ({
-    // eslint-disable-next-line no-underscore-dangle
     id: `hist-${i}-${m.timestamp ?? i}`,
     role: m.role,
     text: m.content ?? "",
@@ -60,7 +59,8 @@ export default function ChatNative() {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
-  const lastUserTextRef = useRef<string | null>(null);
+  const scopeRef = useRef<string | null>(null);
+  const [lastUserText, setLastUserText] = useState<string | null>(null);
   const gwSessionIdRef = useRef<string | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SessionSearchResult[] | null>(null);
@@ -247,7 +247,7 @@ export default function ChatNative() {
     (text: string, attachments: string[]) => {
       if (!gwSessionId || sending) return;
       if (!text && attachments.length === 0) return;
-      lastUserTextRef.current = text;
+      setLastUserText(text);
       const now = Date.now();
       const user: NativeMessage = {
         id: `user-${now}`,
@@ -289,7 +289,7 @@ export default function ChatNative() {
   );
 
   const retry = useCallback(() => {
-    const text = lastUserTextRef.current;
+    const text = lastUserText;
     if (!gwSessionId || sending || !text) return;
     const pending: NativeMessage = {
       id: `assistant-${Date.now()}`,
@@ -319,7 +319,7 @@ export default function ChatNative() {
         });
       },
     );
-  }, [gw, gwSessionId, sending]);
+  }, [gw, gwSessionId, sending, lastUserText]);
 
   const saveEdit = useCallback(() => {
     if (editingIndex === null || sending) return;
@@ -329,7 +329,7 @@ export default function ChatNative() {
     if (!target || target.role !== "user" || rowId === undefined || !value) return;
     const sid = gwSessionIdRef.current;
     if (!sid) return;
-    lastUserTextRef.current = value;
+    setLastUserText(value);
     const now = Date.now();
     const user: NativeMessage = {
       id: `user-${now}`,
@@ -375,7 +375,7 @@ export default function ChatNative() {
   const canRetry =
     !sending &&
     !!gwSessionId &&
-    !!lastUserTextRef.current &&
+    !!lastUserText &&
     !!lastMessage &&
     lastMessage.role === "assistant" &&
     !lastMessage.pending;
