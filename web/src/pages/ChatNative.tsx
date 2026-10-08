@@ -9,6 +9,7 @@ import { api, type SessionMessage, type SessionSearchResult } from "@/lib/api";
 import { GatewayClient } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
 import { ChatBar } from "@/chat/composer/ChatBar";
+import { speakText } from "@/chat/voice";
 
 interface NativeMessage {
   id: string;
@@ -60,6 +61,22 @@ export default function ChatNative() {
   const [modelOpen, setModelOpen] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
   const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+
+  const speak = useCallback(
+    (id: string, text: string) => {
+      if (speakingId || !text) return;
+      setSpeakingId(id);
+      speakText(text, profile ?? "")
+        .catch((e: Error) => {
+          setError(e.message || "speech failed");
+        })
+        .finally(() => {
+          setSpeakingId(null);
+        });
+    },
+    [speakingId, profile],
+  );
 
   useEffect(() => {
     const q = query.trim();
@@ -376,7 +393,20 @@ export default function ChatNative() {
               {m.role === "user" ? (
                 m.text
               ) : m.text ? (
-                <Markdown content={m.text} streaming={!!m.pending} />
+                <>
+                  <Markdown content={m.text} streaming={!!m.pending} />
+                  {!m.pending && (
+                    <button
+                      type="button"
+                      onClick={() => speak(m.id, m.text)}
+                      disabled={speakingId !== null}
+                      aria-label="Read aloud"
+                      className="mt-1 text-xs text-text-secondary hover:text-midground disabled:opacity-50"
+                    >
+                      {speakingId === m.id ? "🔊…" : "🔊"}
+                    </button>
+                  )}
+                </>
               ) : (
                 m.pending && "…"
               )}
