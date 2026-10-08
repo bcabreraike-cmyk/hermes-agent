@@ -16,6 +16,7 @@ interface NativeMessage {
   text: string;
   pending?: boolean;
   error?: string;
+  rowId?: number;
 }
 
 function toNativeMessages(messages: SessionMessage[]): NativeMessage[] {
@@ -36,6 +37,12 @@ function transcriptMarkdown(messages: NativeMessage[]): string {
     .join("\n\n---\n\n");
 }
 
+function rowIdOf(row: unknown): number | null {
+  if (!row || typeof row !== "object") return null;
+  const id = (row as { row_id?: unknown }).row_id;
+  return typeof id === "number" ? id : null;
+}
+
 function deltaText(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
   const text = (payload as { text?: unknown }).text;
@@ -54,12 +61,40 @@ export default function ChatNative() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
   const lastUserTextRef = useRef<string | null>(null);
+  const gwSessionIdRef = useRef<string | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
   const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+
+  const refreshFromServer = useCallback(
+    async (sessionId: string) => {
+      const res = await api.getSessionMessages(sessionId);
+      let rowIds: (number | undefined)[] = [];
+      try {
+        const hist = (await gw.request("session.history", {
+          session_id: sessionId,
+        })) as { rows?: unknown[]; messages?: unknown[] };
+        const rows = hist.rows ?? hist.messages ?? [];
+        if (rows.length === res.messages.length) {
+          rowIds = rows.map((r) => rowIdOf(r) ?? undefined);
+        }
+      } catch {
+        rowIds = [];
+      }
+      setMessages(
+        toNativeMessages(res.messages).map((m, i) => ({
+          ...m,
+          rowId: rowIds[i],
+        })),
+      );
+    },
+    [gw],
+  );
 
   useEffect(() => {
     const q = query.trim();
@@ -139,6 +174,12 @@ export default function ChatNative() {
         if (!last || last.role !== "assistant") return prev;
         return [...prev.slice(0, -1), { ...last, pending: false }];
       });
+      const sid = gwSessionIdRef.current;
+      if (sid) {
+        refreshFromServer(sid).catch((e: Error) => {
+          setError(e.message || "failed to refresh messages");
+        });
+      }
     });
     gw.connect()
       .then(async () => {
@@ -146,7 +187,10 @@ export default function ChatNative() {
         if (activeSessionId) {
           try {
             await gw.request("session.resume", { session_id: activeSessionId });
-            if (!cancelled) setGwSessionId(activeSessionId);
+            if (cancelled) return;
+            setGwSessionId(activeSessionId);
+            gwSessionIdRef.current = activeSessionId;
+            refreshFromServer(activeSessionId).catch(() => {});
             return;
           } catch {
             /* fall through to create */
@@ -158,6 +202,7 @@ export default function ChatNative() {
         });
         if (cancelled) return;
         setGwSessionId(res.session_id);
+        gwSessionIdRef.current = res.session_id;
         // Pin the fresh session in the URL so a reload resumes it.
         setSearchParams(
           (prev) => {
@@ -176,7 +221,7 @@ export default function ChatNative() {
       offDelta();
       offComplete();
     };
-  }, [gw, activeSessionId, profile, setSearchParams]);
+  }, [gw, activeSessionId, profile, setSearchParams, refreshFromServer]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -193,6 +238,8 @@ export default function ChatNative() {
     );
     setMessages([]);
     setGwSessionId(null);
+    gwSessionIdRef.current = null;
+    setEditingIndex(null);
     setError(null);
   }, [setSearchParams]);
 
@@ -274,6 +321,43 @@ export default function ChatNative() {
     );
   }, [gw, gwSessionId, sending]);
 
+  const saveEdit = useCallback(() => {
+    if (editingIndex === null || sending) return;
+    const target = messages[editingIndex];
+    const rowId = target?.rowId;
+    const value = editDraft.trim();
+    if (!target || target.role !== "user" || rowId === undefined || !value) return;
+    const sid = gwSessionIdRef.current;
+    if (!sid) return;
+    lastUserTextRef.current = value;
+    const now = Date.now();
+    const user: NativeMessage = {
+      id: `user-${now}`,
+      role: "user",
+      text: value,
+    };
+    const pending: NativeMessage = {
+      id: `assistant-${now}`,
+      role: "assistant",
+      text: "",
+      pending: true,
+    };
+    setMessages([...messages.slice(0, editingIndex), user, pending]);
+    setEditingIndex(null);
+    setSending(true);
+    setError(null);
+    gw.request("prompt.submit", {
+      session_id: sid,
+      text: value,
+      confirm_truncate: true,
+      truncate_before_row_id: rowId,
+    }).catch((e: Error) => {
+      setSending(false);
+      setError(e.message || "edit failed");
+      refreshFromServer(sid).catch(() => {});
+    });
+  }, [editingIndex, editDraft, messages, sending, gw]);
+
   const exportChat = useCallback(() => {
     if (messages.length === 0) return;
     const blob = new Blob([transcriptMarkdown(messages)], {
@@ -287,7 +371,8 @@ export default function ChatNative() {
     URL.revokeObjectURL(url);
   }, [messages, activeSessionId]);
 
-  const lastMessage = messages.at(-1);  const canRetry =
+  const lastMessage = messages.at(-1);
+  const canRetry =
     !sending &&
     !!gwSessionId &&
     !!lastUserTextRef.current &&
@@ -362,7 +447,7 @@ export default function ChatNative() {
               New conversation — type below to start.
             </div>
           )}
-          {messages.map((m) => (
+          {messages.map((m, i) => (
             <div
               key={m.id}
               className={cn(
@@ -374,7 +459,51 @@ export default function ChatNative() {
               data-role={m.role}
             >
               {m.role === "user" ? (
-                m.text
+                editingIndex === i ? (
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      rows={3}
+                      aria-label="Edit message"
+                      className="w-full resize-y rounded border border-current/20 bg-background-base px-2 py-1 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={saveEdit}
+                        disabled={!editDraft.trim() || sending}
+                        className="rounded border border-current/20 px-2 py-0.5 text-xs text-text-secondary hover:text-midground disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingIndex(null)}
+                        className="rounded border border-current/20 px-2 py-0.5 text-xs text-text-secondary hover:text-midground"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {m.text}
+                    {m.rowId !== undefined && !sending && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingIndex(i);
+                          setEditDraft(m.text);
+                        }}
+                        aria-label="Edit message"
+                        className="ml-2 text-xs text-text-secondary hover:text-midground"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </>
+                )
               ) : m.text ? (
                 <Markdown content={m.text} streaming={!!m.pending} />
               ) : (
