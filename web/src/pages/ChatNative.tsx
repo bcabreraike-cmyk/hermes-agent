@@ -21,7 +21,6 @@ interface NativeMessage {
 
 function toNativeMessages(messages: SessionMessage[]): NativeMessage[] {
   return messages.map((m, i) => ({
-    // eslint-disable-next-line no-underscore-dangle
     id: `hist-${i}-${m.timestamp ?? i}`,
     role: m.role,
     text: m.content ?? "",
@@ -54,7 +53,7 @@ export default function ChatNative() {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
-  const lastUserTextRef = useRef<string | null>(null);
+  const [lastUserText, setLastUserText] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -217,7 +216,7 @@ export default function ChatNative() {
     (text: string, attachments: string[]) => {
       if (!gwSessionId || sending) return;
       if (!text && attachments.length === 0) return;
-      lastUserTextRef.current = text;
+      setLastUserText(text);
       const now = Date.now();
       const user: NativeMessage = {
         id: `user-${now}`,
@@ -259,7 +258,7 @@ export default function ChatNative() {
   );
 
   const retry = useCallback(() => {
-    const text = lastUserTextRef.current;
+    const text = lastUserText;
     if (!gwSessionId || sending || !text) return;
     const pending: NativeMessage = {
       id: `assistant-${Date.now()}`,
@@ -289,7 +288,7 @@ export default function ChatNative() {
         });
       },
     );
-  }, [gw, gwSessionId, sending]);
+  }, [gw, gwSessionId, sending, lastUserText]);
 
   const exportChat = useCallback(() => {
     if (messages.length === 0) return;
@@ -304,10 +303,11 @@ export default function ChatNative() {
     URL.revokeObjectURL(url);
   }, [messages, activeSessionId]);
 
-  const lastMessage = messages.at(-1);  const canRetry =
+  const lastMessage = messages.at(-1);
+  const canRetry =
     !sending &&
     !!gwSessionId &&
-    !!lastUserTextRef.current &&
+    !!lastUserText &&
     !!lastMessage &&
     lastMessage.role === "assistant" &&
     !lastMessage.pending;
