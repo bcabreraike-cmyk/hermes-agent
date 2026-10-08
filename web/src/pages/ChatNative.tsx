@@ -59,7 +59,6 @@ export default function ChatNative() {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scopeRef = useRef<string | null>(null);
-  const scopeRef = useRef<string | null>(null);
   const [lastUserText, setLastUserText] = useState<string | null>(null);
   const gwSessionIdRef = useRef<string | null>(null);
   const [query, setQuery] = useState("");
